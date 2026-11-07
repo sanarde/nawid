@@ -19,6 +19,10 @@ Monitor configuration daemon of SanarDE for Wayland and X11. It applies saved la
 - wayland-client and wayland-scanner
 - libxcb with the RandR extension
 
+Optional:
+
+- [v9nd](https://git.nuros.org/sanarde/v9nd), to build the module `nawid.so`
+
 ## Build
 
 ```sh
@@ -28,6 +32,8 @@ meson test -C build
 meson install -C build
 ```
 
+The module is built when `v9nd.pc` is found. Use `-Dmodule=disabled` to skip it and `-Dmodule_dir=PATH` to change the install directory, which is the `moduledir` of `v9nd.pc` by default.
+
 The install step puts `nawid` and `nawi` in `bin`, the cfgd schema in `share/cfgd/schemas`, the D-Bus service file in `share/dbus-1/services` and the autostart entry in `<sysconfdir>/xdg/autostart`.
 
 ## Running
@@ -36,6 +42,8 @@ The install step puts `nawid` and `nawi` in `bin`, the cfgd schema in `share/cfg
 
 - Wayland: the compositor must support `wlr-output-management`, for example labwc, sway or river. GNOME Shell and KWin do not.
 - X11: RandR 1.2 or newer. The scale of an output is ignored, only the transforms `normal`, `90`, `180` and `270` are supported, and an output that is cloned onto another one is not restored after a layout change. A layout that the server rejects leaves the previous one in place.
+
+`nawid` can also run as a module of v9nd instead of a process of its own: add `nawid` to the key `modules` of `org.nuros.sanar.v9n`, for example `cfgd set /org/nuros/sanar/v9n/modules 'nawid'`. The module uses the cfgd connection and the event loop of v9nd, owns the same D-Bus name and behaves like the daemon. Do not run both at the same time: the second one exits because the name is taken.
 
 A profile is applied when `nawid` starts, when the set of connected outputs changes, when `auto` or `profile` change, when the entries of the selected profile change and when `Apply` is called. A change made by another tool to the same outputs is not reverted.
 
