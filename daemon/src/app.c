@@ -185,12 +185,19 @@ static void backend_changed(void *user)
     sync_outputs(user);
 }
 
-static void backend_applied(bool ok, void *user)
+static void backend_applied(enum nawid_apply_result result, void *user)
 {
-    if (ok)
-        sync_outputs(user);
-    else
+    struct nawid_app *app = user;
+
+    if (result == NAWID_APPLY_FAILED) {
         fprintf(stderr, "nawid: the compositor did not accept the layout\n");
+        return;
+    }
+    if (result == NAWID_APPLY_CANCELLED) {
+        free(app->signature);
+        app->signature = NULL;
+    }
+    sync_outputs(app);
 }
 
 static int add_source(int epfd, int fd, struct nawid_source *source)

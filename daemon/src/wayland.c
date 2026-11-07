@@ -437,7 +437,7 @@ static void config_succeeded(void *data, struct zwlr_output_configuration_v1 *co
 
     zwlr_output_configuration_v1_destroy(config);
     wl->pending = NULL;
-    wl->events->applied(true, wl->user);
+    wl->events->applied(NAWID_APPLY_OK, wl->user);
 }
 
 static void config_failed(void *data, struct zwlr_output_configuration_v1 *config)
@@ -446,13 +446,22 @@ static void config_failed(void *data, struct zwlr_output_configuration_v1 *confi
 
     zwlr_output_configuration_v1_destroy(config);
     wl->pending = NULL;
-    wl->events->applied(false, wl->user);
+    wl->events->applied(NAWID_APPLY_FAILED, wl->user);
+}
+
+static void config_cancelled(void *data, struct zwlr_output_configuration_v1 *config)
+{
+    struct nawid_wl *wl = data;
+
+    zwlr_output_configuration_v1_destroy(config);
+    wl->pending = NULL;
+    wl->events->applied(NAWID_APPLY_CANCELLED, wl->user);
 }
 
 static const struct zwlr_output_configuration_v1_listener config_listener = {
     .succeeded = config_succeeded,
     .failed = config_failed,
-    .cancelled = config_failed,
+    .cancelled = config_cancelled,
 };
 
 static struct wl_mode *mode_for(const struct wl_head *head, const struct nawid_output *entry)
