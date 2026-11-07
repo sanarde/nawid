@@ -37,7 +37,7 @@ The install step puts `nawid` and `nawi` in `bin`, the cfgd schema in `share/cfg
 - Wayland: the compositor must support `wlr-output-management`, for example labwc, sway or river. GNOME Shell and KWin do not.
 - X11: RandR 1.2 or newer. The scale of an output is ignored, only the transforms `normal`, `90`, `180` and `270` are supported, and an output that is cloned onto another one is not restored after a layout change. A layout that the server rejects leaves the previous one in place.
 
-A profile is applied when `nawid` starts, when the set of connected outputs changes, when the settings change and when `Apply` is called. A change made by another tool to the same outputs is not reverted.
+A profile is applied when `nawid` starts, when the set of connected outputs changes, when `auto` or `profile` change, when the entries of the selected profile change and when `Apply` is called. A change made by another tool to the same outputs is not reverted.
 
 ## Settings
 
@@ -53,7 +53,7 @@ An entry is `PROFILE/OUTPUT=WIDTHxHEIGHT[@HZ],X,Y,SCALE,TRANSFORM` or `PROFILE/O
 cfgd set /org/nuros/sanar/nawi/profiles 'desk/eDP-1=off;desk/DP-1=2560x1440@143.912,0,0,1,normal'
 ```
 
-With `auto`, a profile is selected when it has an entry for every connected output and every output it enables is connected. The one that enables the most outputs wins, and the first one in the list wins a tie. Entries for outputs that are not connected are ignored.
+With `auto`, a profile is selected when it has an entry for every connected output and every output it enables is connected. The one that enables the most outputs wins, and the last one in the list wins a tie, so a profile saved with `nawi save` takes over from older ones. Entries for outputs that are not connected are ignored.
 
 ## Command line
 
@@ -65,7 +65,7 @@ nawi save PROFILE
 nawi delete PROFILE
 ```
 
-`list` prints the current layout. `profiles` lists the profiles and marks the applied one with `*`. `apply PROFILE` applies a profile until the settings change, `apply` without a name returns to the selection by `auto` and `profile`. `save` stores the current layout as a profile, replacing a profile of the same name, and `delete` removes one. `save` and `delete` write `profiles` through cfgd.
+`list` prints the current layout. `profiles` lists the profiles and marks the applied one with `*`. `apply PROFILE` applies a profile until `apply` without a name or a change of `auto` or `profile` returns to the selection by them. `save` stores the current layout as a profile, replacing a profile of the same name, and `delete` removes one. `save` and `delete` write `profiles` through cfgd, and `delete` fails when there is no such profile.
 
 ## D-Bus interface
 

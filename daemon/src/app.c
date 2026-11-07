@@ -76,31 +76,39 @@ static int apply_profile(struct nawid_app *app, const struct nawid_profile *prof
     return rc;
 }
 
-static int evaluate(struct nawid_app *app)
+static const struct nawid_profile *select_profile(struct nawid_app *app)
 {
-    int rc = 0;
-
     const struct nawid_profile *profile = NULL;
     struct nawid_output *heads = NULL;
     size_t count;
 
-    if (app->override[0] != '\0') {
-        profile = nawid_profiles_find(&app->profiles, app->override);
-    } else if (app->settings.profile[0] != '\0') {
-        profile = nawid_profiles_find(&app->profiles, app->settings.profile);
-    } else if (app->settings.automatic) {
-        const char **names;
+    if (app->override[0] != '\0')
+        return nawid_profiles_find(&app->profiles, app->override);
+    if (app->settings.profile[0] != '\0')
+        return nawid_profiles_find(&app->profiles, app->settings.profile);
+    if (!app->settings.automatic)
+        return NULL;
 
-        count = backend_heads(app, &heads);
-        names = calloc(count ? count : 1, sizeof(*names));
+    count = backend_heads(app, &heads);
+    {
+        const char **names = calloc(count ? count : 1, sizeof(*names));
+
         if (names) {
             for (size_t i = 0; i < count; i++)
                 names[i] = heads[i].name;
             profile = nawid_profiles_select(&app->profiles, names, count);
             free(names);
         }
-        free(heads);
     }
+    free(heads);
+    return profile;
+}
+
+static int evaluate(struct nawid_app *app)
+{
+    const struct nawid_profile *profile = select_profile(app);
+    int rc;
+
     if (!profile) {
         set_active(app, "");
         return 0;
@@ -164,7 +172,6 @@ static void settings_reload(struct nawid_app *app)
 {
     size_t skipped;
 
-    app->override[0] = '\0';
     nawid_settings_load(app->cfgd, &app->settings);
     nawid_profiles_free(&app->profiles);
     skipped = nawid_profiles_load(&app->profiles, app->settings.items,
@@ -173,11 +180,61 @@ static void settings_reload(struct nawid_app *app)
         fprintf(stderr, "nawid: %zu invalid or duplicate profile entries ignored\n", skipped);
 }
 
+static bool profile_same(const struct nawid_output *entries, size_t count,
+                         const struct nawid_profile *profile)
+{
+    if (count != profile->count)
+        return false;
+    for (size_t i = 0; i < count; i++) {
+        const struct nawid_output *other = nawid_profile_entry(profile, entries[i].name);
+
+        if (!other || !nawid_output_equal(&entries[i], other, true) ||
+            entries[i].refresh != other->refresh)
+            return false;
+    }
+    return true;
+}
+
+static bool key_is(const char *key, const char *name)
+{
+    size_t key_length = strlen(key);
+    size_t name_length = strlen(name);
+
+    return key_length >= name_length && strcmp(key + key_length - name_length, name) == 0;
+}
+
 static void settings_changed(const char *key, void *user)
 {
-    (void)key;
-    settings_reload(user);
-    evaluate(user);
+    struct nawid_app *app = user;
+    struct nawid_output *old = NULL;
+    size_t old_count = 0;
+    const struct nawid_profile *current;
+    const struct nawid_profile *next;
+
+    if (key_is(key, "/auto") || key_is(key, "/profile")) {
+        app->override[0] = '\0';
+        settings_reload(app);
+        evaluate(app);
+        return;
+    }
+
+    current = app->active[0] ? nawid_profiles_find(&app->profiles, app->active) : NULL;
+    if (current && current->count > 0) {
+        old = malloc(current->count * sizeof(*old));
+        if (old) {
+            memcpy(old, current->entries, current->count * sizeof(*old));
+            old_count = current->count;
+        }
+    }
+    settings_reload(app);
+    if (app->override[0] != '\0' && !nawid_profiles_find(&app->profiles, app->override))
+        app->override[0] = '\0';
+
+    next = select_profile(app);
+    if (!next || strcmp(next->name, app->active) != 0 || !old ||
+        !profile_same(old, old_count, next))
+        evaluate(app);
+    free(old);
 }
 
 static void backend_changed(void *user)
