@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.nuros.sanar.Nawi
+Exec=@bindir@/nawid
