@@ -154,3 +154,105 @@ static void head_current_mode(void *data, struct zwlr_output_head_v1 *head,
     (void)head;
     h->current = zwlr_output_mode_v1_get_user_data(mode);
 }
+
+static void head_position(void *data, struct zwlr_output_head_v1 *head, int32_t x, int32_t y)
+{
+    struct wl_head *h = data;
+
+    (void)head;
+    h->state.x = x;
+    h->state.y = y;
+}
+
+static void head_transform(void *data, struct zwlr_output_head_v1 *head, int32_t transform)
+{
+    struct wl_head *h = data;
+
+    (void)head;
+    h->state.transform = transform;
+}
+
+static void head_scale(void *data, struct zwlr_output_head_v1 *head, wl_fixed_t scale)
+{
+    struct wl_head *h = data;
+
+    (void)head;
+    h->state.scale = wl_fixed_to_double(scale);
+}
+
+static void head_finished(void *data, struct zwlr_output_head_v1 *head)
+{
+    struct wl_head *h = data;
+    struct nawid_wl *wl = h->wl;
+
+    for (struct wl_head **link = &wl->heads; *link; link = &(*link)->next) {
+        if (*link == h) {
+            *link = h->next;
+            break;
+        }
+    }
+    while (h->modes) {
+        struct wl_mode *m = h->modes;
+
+        h->modes = m->next;
+        zwlr_output_mode_v1_destroy(m->mode);
+        free(m);
+    }
+    if (zwlr_output_head_v1_get_version(head) >= ZWLR_OUTPUT_HEAD_V1_RELEASE_SINCE_VERSION)
+        zwlr_output_head_v1_release(head);
+    else
+        zwlr_output_head_v1_destroy(head);
+    free(h);
+}
+
+static void head_text(void *data, struct zwlr_output_head_v1 *head, const char *text)
+{
+    (void)data;
+    (void)head;
+    (void)text;
+}
+
+static void head_adaptive_sync(void *data, struct zwlr_output_head_v1 *head, uint32_t state)
+{
+    (void)data;
+    (void)head;
+    (void)state;
+}
+
+static const struct zwlr_output_head_v1_listener head_listener = {
+    .name = head_name,
+    .description = head_description,
+    .physical_size = head_physical_size,
+    .mode = head_mode,
+    .enabled = head_enabled,
+    .current_mode = head_current_mode,
+    .position = head_position,
+    .transform = head_transform,
+    .scale = head_scale,
+    .finished = head_finished,
+    .make = head_text,
+    .model = head_text,
+    .serial_number = head_text,
+    .adaptive_sync = head_adaptive_sync,
+};
+
+static void manager_head(void *data, struct zwlr_output_manager_v1 *manager,
+                         struct zwlr_output_head_v1 *head)
+{
+    struct nawid_wl *wl = data;
+    struct wl_head *h = calloc(1, sizeof(*h));
+
+    (void)manager;
+    if (!h)
+        return;
+    h->wl = wl;
+    h->head = head;
+    h->state.scale = 1.0;
+    for (struct wl_head **link = &wl->heads;; link = &(*link)->next) {
+        if (!*link) {
+            *link = h;
+            break;
+        }
+    }
+    zwlr_output_head_v1_add_listener(head, &head_listener, h);
+}
