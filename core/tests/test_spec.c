@@ -45,6 +45,11 @@ int main(void)
     CHECK(nawid_item_format(profile, &o, text, sizeof(text)) == 0);
     CHECK_STR(text, "desk/DP-1=2560x1440@143.912,1920,-100,1.5,90");
     CHECK(nawid_item_format(profile, &o, text, 10) != 0);
+    strcpy(p.name, "a=b");
+    p.enabled = false;
+    CHECK(nawid_item_format(profile, &p, text, sizeof(text)) != 0);
+    strcpy(p.name, "a/b");
+    CHECK(nawid_item_format(profile, &p, text, sizeof(text)) != 0);
     CHECK(parse("desk/HDMI-A-1=off", profile, &o) == 0);
     CHECK(nawid_item_format(profile, &o, text, sizeof(text)) == 0);
     CHECK_STR(text, "desk/HDMI-A-1=off");

@@ -157,6 +157,9 @@ int nawid_item_format(const char *profile, const struct nawid_output *output, ch
 {
     int written;
 
+    if (strpbrk(output->name, "/=")) {
+        return -1;
+    }
     if (!output->enabled) {
         written = snprintf(buffer, size, "%s/%s=off", profile, output->name);
     } else if (output->refresh > 0) {
