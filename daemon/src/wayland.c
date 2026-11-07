@@ -307,3 +307,229 @@ static void registry_remove(void *data, struct wl_registry *registry, uint32_t n
     (void)registry;
     (void)name;
 }
+
+static const struct wl_registry_listener registry_listener = {
+    .global = registry_global,
+    .global_remove = registry_remove,
+};
+
+struct nawid_wl *nawid_wl_open(const struct nawid_events *events, void *user)
+{
+    struct nawid_wl *wl = calloc(1, sizeof(*wl));
+
+    if (!wl)
+        return NULL;
+    wl->events = events;
+    wl->user = user;
+    wl->display = wl_display_connect(NULL);
+    if (!wl->display) {
+        fprintf(stderr, "nawid: cannot connect to the Wayland display\n");
+        goto fail;
+    }
+    wl->registry = wl_display_get_registry(wl->display);
+    wl_registry_add_listener(wl->registry, &registry_listener, wl);
+    wl_display_roundtrip(wl->display);
+    if (!wl->manager) {
+        fprintf(stderr, "nawid: the compositor does not support wlr-output-management\n");
+        goto fail;
+    }
+    wl_display_roundtrip(wl->display);
+    wl_display_roundtrip(wl->display);
+    if (!wl->ready) {
+        fprintf(stderr, "nawid: the compositor did not report its outputs\n");
+        goto fail;
+    }
+    wl->notify = true;
+    return wl;
+
+fail:
+    nawid_wl_close(wl);
+    return NULL;
+}
+
+void nawid_wl_close(struct nawid_wl *wl)
+{
+    if (!wl)
+        return;
+    if (wl->pending)
+        zwlr_output_configuration_v1_destroy(wl->pending);
+    if (wl->manager)
+        zwlr_output_manager_v1_stop(wl->manager);
+    while (wl->heads) {
+        struct wl_head *h = wl->heads;
+
+        wl->heads = h->next;
+        while (h->modes) {
+            struct wl_mode *m = h->modes;
+
+            h->modes = m->next;
+            zwlr_output_mode_v1_destroy(m->mode);
+            free(m);
+        }
+        zwlr_output_head_v1_destroy(h->head);
+        free(h);
+    }
+    if (wl->manager)
+        zwlr_output_manager_v1_destroy(wl->manager);
+    if (wl->registry)
+        wl_registry_destroy(wl->registry);
+    if (wl->display) {
+        wl_display_flush(wl->display);
+        wl_display_disconnect(wl->display);
+    }
+    free(wl);
+}
+
+int nawid_wl_fd(struct nawid_wl *wl)
+{
+    return wl_display_get_fd(wl->display);
+}
+
+int nawid_wl_prepare(struct nawid_wl *wl)
+{
+    while (wl_display_prepare_read(wl->display) != 0)
+        wl_display_dispatch_pending(wl->display);
+    wl->reading = true;
+    if (wl_display_flush(wl->display) < 0 && errno != EAGAIN) {
+        wl_display_cancel_read(wl->display);
+        wl->reading = false;
+        return -1;
+    }
+    return 0;
+}
+
+int nawid_wl_finish(struct nawid_wl *wl, int readable)
+{
+    int rc = 0;
+
+    if (wl->reading) {
+        if (readable) {
+            if (wl_display_read_events(wl->display) < 0)
+                rc = -1;
+        } else {
+            wl_display_cancel_read(wl->display);
+        }
+        wl->reading = false;
+    }
+    if (rc == 0 && wl_display_dispatch_pending(wl->display) < 0)
+        rc = -1;
+    return rc;
+}
+
+size_t nawid_wl_heads(struct nawid_wl *wl, struct nawid_output **heads)
+{
+    size_t count = 0;
+    size_t index = 0;
+
+    for (struct wl_head *h = wl->heads; h; h = h->next)
+        count++;
+    *heads = calloc(count ? count : 1, sizeof(**heads));
+    if (!*heads)
+        return 0;
+    for (struct wl_head *h = wl->heads; h; h = h->next)
+        (*heads)[index++] = h->state;
+    return count;
+}
+
+static void config_succeeded(void *data, struct zwlr_output_configuration_v1 *config)
+{
+    struct nawid_wl *wl = data;
+
+    zwlr_output_configuration_v1_destroy(config);
+    wl->pending = NULL;
+    wl->events->applied(true, wl->user);
+}
+
+static void config_failed(void *data, struct zwlr_output_configuration_v1 *config)
+{
+    struct nawid_wl *wl = data;
+
+    zwlr_output_configuration_v1_destroy(config);
+    wl->pending = NULL;
+    wl->events->applied(false, wl->user);
+}
+
+static const struct zwlr_output_configuration_v1_listener config_listener = {
+    .succeeded = config_succeeded,
+    .failed = config_failed,
+    .cancelled = config_failed,
+};
+
+static struct wl_mode *mode_for(const struct wl_head *head, const struct nawid_output *entry)
+{
+    size_t count = 0;
+    struct nawid_mode *infos;
+    struct wl_mode **modes;
+    struct wl_mode *found = NULL;
+    int index;
+
+    for (struct wl_mode *m = head->modes; m; m = m->next)
+        count++;
+    infos = calloc(count ? count : 1, sizeof(*infos));
+    modes = calloc(count ? count : 1, sizeof(*modes));
+    if (!infos || !modes) {
+        free(infos);
+        free(modes);
+        return NULL;
+    }
+    count = 0;
+    for (struct wl_mode *m = head->modes; m; m = m->next) {
+        infos[count] = m->info;
+        modes[count++] = m;
+    }
+    index = nawid_mode_pick(infos, count, entry);
+    if (index >= 0)
+        found = modes[index];
+    free(infos);
+    free(modes);
+    return found;
+}
+
+int nawid_wl_apply(struct nawid_wl *wl, const struct nawid_output *entries, size_t count)
+{
+    struct zwlr_output_configuration_v1 *config;
+
+    if (!wl->ready || wl->pending)
+        return -1;
+    config = zwlr_output_manager_v1_create_configuration(wl->manager, wl->serial);
+    if (!config)
+        return -1;
+    for (struct wl_head *h = wl->heads; h; h = h->next) {
+        const struct nawid_output *entry = NULL;
+
+        for (size_t i = 0; i < count; i++) {
+            if (strcmp(entries[i].name, h->state.name) == 0)
+                entry = &entries[i];
+        }
+        if (entry && !entry->enabled) {
+            zwlr_output_configuration_v1_disable_head(config, h->head);
+        } else if (!entry && !h->state.enabled) {
+            zwlr_output_configuration_v1_disable_head(config, h->head);
+        } else {
+            struct zwlr_output_configuration_head_v1 *settings =
+                zwlr_output_configuration_v1_enable_head(config, h->head);
+            struct wl_mode *mode = entry ? mode_for(h, entry) : NULL;
+
+            if (!entry) {
+                wl_proxy_destroy((struct wl_proxy *)settings);
+                continue;
+            }
+            if (mode)
+                zwlr_output_configuration_head_v1_set_mode(settings, mode->mode);
+            else
+                zwlr_output_configuration_head_v1_set_custom_mode(settings, entry->width,
+                                                                  entry->height,
+                                                                  entry->refresh);
+            zwlr_output_configuration_head_v1_set_position(settings, entry->x, entry->y);
+            zwlr_output_configuration_head_v1_set_transform(settings, entry->transform);
+            zwlr_output_configuration_head_v1_set_scale(settings,
+                                                        wl_fixed_from_double(entry->scale));
+            wl_proxy_destroy((struct wl_proxy *)settings);
+        }
+    }
+    zwlr_output_configuration_v1_add_listener(config, &config_listener, wl);
+    zwlr_output_configuration_v1_apply(config);
+    wl->pending = config;
+    wl_display_flush(wl->display);
+    return 0;
+}
