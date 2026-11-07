@@ -55,6 +55,18 @@ int main(void)
     nawid_profiles_free(&profiles);
     CHECK(profiles.count == 0);
 
+    {
+        char *tied[] = {
+            "first/eDP-1=1920x1080,0,0,1,normal",
+            "second/eDP-1=1920x1080,0,0,2,normal",
+        };
+
+        CHECK(nawid_profiles_load(&profiles, tied, 2) == 0);
+        found = nawid_profiles_select(&profiles, laptop, 1);
+        CHECK(found && strcmp(found->name, "second") == 0);
+        nawid_profiles_free(&profiles);
+    }
+
     CHECK(nawid_profiles_load(&profiles, items, 0) == 0);
     CHECK(nawid_profiles_select(&profiles, laptop, 1) == NULL);
     nawid_profiles_free(&profiles);

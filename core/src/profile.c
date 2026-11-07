@@ -111,7 +111,7 @@ const struct nawid_profile *nawid_profiles_select(const struct nawid_profiles *p
                 score++;
             }
         }
-        if (matches && count > 0 && (!best || score > best_score)) {
+        if (matches && count > 0 && (!best || score >= best_score)) {
             best = profile;
             best_score = score;
         }
