@@ -33,11 +33,13 @@ nawid_daemon = static_library(
   'src/app.c',
   'src/bus.c',
   'src/settings.c',
+  'src/standalone.c',
   'src/wayland.c',
   'src/x11.c',
   protocol_sources,
   include_directories: [nawid_src_inc, nawid_core_inc],
   dependencies: nawid_deps,
+  pic: true,
 )
 
 executable(
@@ -48,3 +50,24 @@ executable(
   dependencies: nawid_deps,
   install: true,
 )
+
+v9nd_dep = dependency('v9nd', required: get_option('module'))
+
+if v9nd_dep.found()
+  module_dir = get_option('module_dir')
+  if module_dir == ''
+    module_dir = v9nd_dep.get_variable(pkgconfig: 'moduledir')
+  endif
+
+  shared_module(
+    'nawid',
+    'src/module.c',
+    name_prefix: '',
+    include_directories: [nawid_src_inc, nawid_core_inc],
+    link_with: [nawid_daemon, nawid_core],
+    dependencies: nawid_deps + [v9nd_dep],
+    gnu_symbol_visibility: 'hidden',
+    install: true,
+    install_dir: module_dir,
+  )
+endif

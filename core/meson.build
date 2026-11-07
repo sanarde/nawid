@@ -8,6 +8,7 @@ nawid_core = static_library(
   'src/spec.c',
   include_directories: nawid_core_inc,
   gnu_symbol_visibility: 'hidden',
+  pic: true,
   dependencies: m_dep,
 )
 
