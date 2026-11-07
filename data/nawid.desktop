@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sanar Nawid
+Comment=Monitor configuration daemon
+Comment[ru]=Служба настройки мониторов
+Exec=nawid
+Terminal=false
+NoDisplay=true
+StartupNotify=false
