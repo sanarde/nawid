@@ -271,7 +271,7 @@ void nawid_app_close(struct nawid_app *app)
 
 int nawid_app_prepare(struct nawid_app *app)
 {
-    return app->wl ? nawid_wl_prepare(app->wl) : 0;
+    return app->wl ? nawid_wl_prepare(app->wl) : nawid_x11_dispatch(app->x11);
 }
 
 int nawid_app_finish(struct nawid_app *app, bool display_ready)
