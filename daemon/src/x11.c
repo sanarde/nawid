@@ -393,3 +393,139 @@ static int plan(struct nawid_x11 *x11, struct x11_view *view,
     }
     return 0;
 }
+
+static int crtc_set(struct nawid_x11 *x11, const struct x11_view *view, xcb_randr_crtc_t crtc,
+                    int x, int y, xcb_randr_mode_t mode, uint16_t rotation,
+                    const xcb_randr_output_t *output)
+{
+    xcb_randr_set_crtc_config_reply_t *reply = xcb_randr_set_crtc_config_reply(
+        x11->connection,
+        xcb_randr_set_crtc_config(x11->connection, crtc, XCB_CURRENT_TIME,
+                                  view->resources->config_timestamp, (int16_t)x, (int16_t)y,
+                                  mode, rotation, output ? 1 : 0, output),
+        NULL);
+    int status = reply ? reply->status : -1;
+
+    free(reply);
+    return status == XCB_RANDR_SET_CONFIG_SUCCESS ? 0 : -1;
+}
+
+static int screen_resize(struct nawid_x11 *x11, int width, int height)
+{
+    xcb_generic_error_t *error = xcb_request_check(
+        x11->connection,
+        xcb_randr_set_screen_size_checked(
+            x11->connection, x11->screen->root, (uint16_t)width, (uint16_t)height,
+            (uint32_t)(width * MM_PER_INCH_TIMES_100 / (DPI * 100)),
+            (uint32_t)(height * MM_PER_INCH_TIMES_100 / (DPI * 100))));
+
+    free(error);
+    return error ? -1 : 0;
+}
+
+static void restore(struct nawid_x11 *x11, const struct x11_view *view, int width, int height)
+{
+    for (size_t i = 0; i < view->count; i++) {
+        const struct x11_head *head = &view->heads[i];
+
+        if (head->wanted_crtc != XCB_NONE)
+            crtc_set(x11, view, head->wanted_crtc, 0, 0, XCB_NONE,
+                     XCB_RANDR_ROTATION_ROTATE_0, NULL);
+        if (head->crtc != XCB_NONE && head->crtc != head->wanted_crtc)
+            crtc_set(x11, view, head->crtc, 0, 0, XCB_NONE, XCB_RANDR_ROTATION_ROTATE_0,
+                     NULL);
+    }
+    screen_resize(x11, width, height);
+    for (size_t i = 0; i < view->count; i++) {
+        const struct x11_head *head = &view->heads[i];
+
+        if (head->crtc != XCB_NONE && head->state.enabled)
+            crtc_set(x11, view, head->crtc, head->state.x, head->state.y, head->current_mode,
+                     head->current_rotation, &head->id);
+    }
+}
+
+int nawid_x11_apply(struct nawid_x11 *x11, const struct nawid_output *entries, size_t count)
+{
+    xcb_connection_t *c = x11->connection;
+    struct x11_view view;
+    xcb_randr_get_screen_size_range_reply_t *range;
+    xcb_get_geometry_reply_t *geometry;
+    int old_width;
+    int old_height;
+    int width = 0;
+    int height = 0;
+    int rc = -1;
+
+    if (view_load(x11, &view) != 0)
+        return -1;
+    geometry = xcb_get_geometry_reply(c, xcb_get_geometry(c, x11->screen->root), NULL);
+    if (!geometry) {
+        view_free(&view);
+        return -1;
+    }
+    old_width = geometry->width;
+    old_height = geometry->height;
+    free(geometry);
+    if (plan(x11, &view, entries, count) != 0)
+        goto out;
+
+    for (size_t i = 0; i < view.count; i++) {
+        const struct x11_head *head = &view.heads[i];
+        int w = head->wanted.width;
+        int h = head->wanted.height;
+
+        if (head->wanted_crtc == XCB_NONE)
+            continue;
+        if (head->wanted_rotation & (XCB_RANDR_ROTATION_ROTATE_90 | XCB_RANDR_ROTATION_ROTATE_270)) {
+            w = head->wanted.height;
+            h = head->wanted.width;
+        }
+        if (head->wanted.x + w > width)
+            width = head->wanted.x + w;
+        if (head->wanted.y + h > height)
+            height = head->wanted.y + h;
+        if (head->wanted.x < 0 || head->wanted.y < 0)
+            goto out;
+    }
+    range = xcb_randr_get_screen_size_range_reply(
+        c, xcb_randr_get_screen_size_range(c, x11->screen->root), NULL);
+    if (!range)
+        goto out;
+    if (width < range->min_width || width > range->max_width || height < range->min_height ||
+        height > range->max_height) {
+        free(range);
+        goto out;
+    }
+    free(range);
+
+    for (size_t i = 0; i < view.count; i++) {
+        if (view.heads[i].crtc != XCB_NONE &&
+            crtc_set(x11, &view, view.heads[i].crtc, 0, 0, XCB_NONE,
+                     XCB_RANDR_ROTATION_ROTATE_0, NULL) != 0) {
+            restore(x11, &view, old_width, old_height);
+            goto out;
+        }
+    }
+    if (screen_resize(x11, width, height) != 0) {
+        restore(x11, &view, old_width, old_height);
+        goto out;
+    }
+    rc = 0;
+    for (size_t i = 0; i < view.count; i++) {
+        const struct x11_head *head = &view.heads[i];
+
+        if (head->wanted_crtc == XCB_NONE)
+            continue;
+        if (crtc_set(x11, &view, head->wanted_crtc, head->wanted.x, head->wanted.y,
+                     head->wanted_mode, head->wanted_rotation, &head->id) != 0)
+            rc = -1;
+    }
+    if (rc != 0)
+        restore(x11, &view, old_width, old_height);
+
+out:
+    view_free(&view);
+    xcb_flush(c);
+    return rc;
+}
