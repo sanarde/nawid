@@ -9,6 +9,8 @@
 #include "wayland.h"
 #include "x11.h"
 
+static void settle(struct nawid_app *app);
+
 static size_t backend_heads(struct nawid_app *app, struct nawid_output **heads)
 {
     if (app->wl)
@@ -172,7 +174,7 @@ static void settings_reload(struct nawid_app *app)
 {
     size_t skipped;
 
-    nawid_settings_load(app->cfgd, &app->settings);
+    nawid_settings_load(app->loop->cfgd, &app->settings);
     nawid_profiles_free(&app->profiles);
     skipped = nawid_profiles_load(&app->profiles, app->settings.items,
                                   app->settings.items_count);
@@ -215,6 +217,7 @@ static void settings_changed(const char *key, void *user)
         app->override[0] = '\0';
         settings_reload(app);
         evaluate(app);
+        settle(app);
         return;
     }
 
@@ -235,11 +238,26 @@ static void settings_changed(const char *key, void *user)
         !profile_same(old, old_count, next))
         evaluate(app);
     free(old);
+    settle(app);
+}
+
+static void settle(struct nawid_app *app)
+{
+    if (app->x11)
+        nawid_x11_dispatch(app->x11);
+    while (app->dirty) {
+        app->dirty = false;
+        sync_outputs(app);
+        if (app->x11)
+            nawid_x11_dispatch(app->x11);
+    }
 }
 
 static void backend_changed(void *user)
 {
-    sync_outputs(user);
+    struct nawid_app *app = user;
+
+    app->dirty = true;
 }
 
 static void backend_applied(enum nawid_apply_result result, void *user)
@@ -254,36 +272,37 @@ static void backend_applied(enum nawid_apply_result result, void *user)
         free(app->signature);
         app->signature = NULL;
     }
-    sync_outputs(app);
+    app->dirty = true;
 }
 
-static int add_source(int epfd, int fd, struct nawid_source *source)
+static void display_ready(int fd, uint32_t events, void *user)
 {
-    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = source};
+    struct nawid_app *app = user;
+    int rc;
 
-    return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+    (void)events;
+    rc = app->wl ? nawid_wl_dispatch(app->wl) : nawid_x11_dispatch(app->x11);
+    if (rc != 0) {
+        fprintf(stderr, "nawid: lost the display connection\n");
+        app->loop->unwatch(app->loop, fd);
+        app->failed = true;
+        return;
+    }
+    settle(app);
 }
 
-int nawid_app_open(struct nawid_app *app, int epfd, enum nawid_backend backend)
+int nawid_app_open(struct nawid_app *app, struct nawid_loop *loop, enum nawid_backend backend)
 {
-    int display_fd;
-
     memset(app, 0, sizeof(*app));
-    app->epfd = epfd;
-    app->config_source.kind = NAWID_SRC_CONFIG;
-    app->display_source.kind = NAWID_SRC_DISPLAY;
+    app->loop = loop;
+    app->subscription = -1;
+    app->display_fd = -1;
     app->events.changed = backend_changed;
     app->events.applied = backend_applied;
-    app->bus.connection = NULL;
 
-    app->cfgd = cfgd_open();
-    if (!app->cfgd) {
-        fprintf(stderr, "nawid: cannot open the settings\n");
-        return -1;
-    }
     settings_reload(app);
-    if (add_source(epfd, cfgd_notify_fd(app->cfgd), &app->config_source) != 0 ||
-        cfgd_subscribe(app->cfgd, NAWID_SETTINGS_PREFIX, settings_changed, app) < 0) {
+    app->subscription = loop->subscribe(loop, NAWID_SETTINGS_PREFIX, settings_changed, app);
+    if (app->subscription < 0) {
         fprintf(stderr, "nawid: cannot watch the settings\n");
         return -1;
     }
@@ -295,52 +314,41 @@ int nawid_app_open(struct nawid_app *app, int epfd, enum nawid_backend backend)
         app->wl = nawid_wl_open(&app->events, app);
         if (!app->wl)
             return -1;
-        display_fd = nawid_wl_fd(app->wl);
+        app->display_fd = nawid_wl_fd(app->wl);
     } else {
         app->x11 = nawid_x11_open(&app->events, app);
         if (!app->x11)
             return -1;
-        display_fd = nawid_x11_fd(app->x11);
+        app->display_fd = nawid_x11_fd(app->x11);
     }
-    if (add_source(epfd, display_fd, &app->display_source) != 0) {
+    if (loop->watch(loop, app->display_fd, EPOLLIN, display_ready, app) != 0) {
         fprintf(stderr, "nawid: cannot watch the display connection\n");
         return -1;
     }
-    if (nawid_bus_open(&app->bus, epfd, app) != 0)
+    if (nawid_bus_open(&app->bus, loop, app) != 0)
         return -1;
 
     app->signature = signature_make(app);
     evaluate(app);
+    settle(app);
     return 0;
 }
 
 void nawid_app_close(struct nawid_app *app)
 {
+    if (!app->loop)
+        return;
     nawid_bus_close(&app->bus);
+    if (app->display_fd >= 0)
+        app->loop->unwatch(app->loop, app->display_fd);
+    if (app->subscription >= 0)
+        app->loop->unsubscribe(app->loop, app->subscription);
     nawid_wl_close(app->wl);
     nawid_x11_close(app->x11);
     nawid_profiles_free(&app->profiles);
     nawid_settings_free(&app->settings);
     free(app->signature);
-    cfgd_close(app->cfgd);
     memset(app, 0, sizeof(*app));
-}
-
-int nawid_app_prepare(struct nawid_app *app)
-{
-    return app->wl ? nawid_wl_prepare(app->wl) : nawid_x11_dispatch(app->x11);
-}
-
-int nawid_app_finish(struct nawid_app *app, bool display_ready)
-{
-    if (app->wl)
-        return nawid_wl_finish(app->wl, display_ready);
-    return display_ready ? nawid_x11_dispatch(app->x11) : 0;
-}
-
-void nawid_app_config_event(struct nawid_app *app)
-{
-    cfgd_dispatch(app->cfgd);
 }
 
 size_t nawid_app_heads(struct nawid_app *app, struct nawid_output **heads)
@@ -351,14 +359,18 @@ size_t nawid_app_heads(struct nawid_app *app, struct nawid_output **heads)
 int nawid_app_apply(struct nawid_app *app, const char *name)
 {
     const struct nawid_profile *profile = NULL;
+    int rc;
 
     if (name[0] != '\0') {
         profile = nawid_profiles_find(&app->profiles, name);
         if (!profile)
             return -2;
         snprintf(app->override, sizeof(app->override), "%s", name);
-        return apply_profile(app, profile);
+        rc = apply_profile(app, profile);
+    } else {
+        app->override[0] = '\0';
+        rc = evaluate(app);
     }
-    app->override[0] = '\0';
-    return evaluate(app);
+    settle(app);
+    return rc;
 }
