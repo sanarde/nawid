@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <errno.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "standalone.h"
+
+static bool stop;
 
 static int open_signal_fd(void)
 {
@@ -20,6 +24,23 @@ static int open_signal_fd(void)
     if (sigprocmask(SIG_BLOCK, &mask, NULL) != 0)
         return -1;
     return signalfd(-1, &mask, SFD_CLOEXEC);
+}
+
+static bool finished(void *user)
+{
+    const struct nawid_app *app = user;
+
+    return stop || app->failed;
+}
+
+static void signal_ready(int fd, uint32_t events, void *user)
+{
+    struct signalfd_siginfo info;
+
+    (void)events;
+    (void)user;
+    if (read(fd, &info, sizeof(info)) == sizeof(info))
+        stop = true;
 }
 
 static int parse_backend(const char *name, enum nawid_backend *backend)
@@ -37,12 +58,10 @@ static int parse_backend(const char *name, enum nawid_backend *backend)
 
 int main(int argc, char **argv)
 {
-    struct nawid_source signal_source = {NAWID_SRC_SIGNAL};
     enum nawid_backend backend = NAWID_BACKEND_AUTO;
-    struct nawid_app app;
-    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = &signal_source};
+    struct nawid_standalone standalone;
+    struct nawid_app app = {0};
     int sig_fd;
-    int epfd;
     int status = 0;
 
     if (argc == 3 && strcmp(argv[1], "-b") == 0 && parse_backend(argv[2], &backend) == 0) {
@@ -52,54 +71,23 @@ int main(int argc, char **argv)
     }
 
     sig_fd = open_signal_fd();
-    epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (sig_fd < 0 || epfd < 0 || epoll_ctl(epfd, EPOLL_CTL_ADD, sig_fd, &ev) != 0) {
+    if (sig_fd < 0) {
         fprintf(stderr, "nawid: %s\n", strerror(errno));
         return 1;
     }
-
-    if (nawid_app_open(&app, epfd, backend) != 0) {
+    if (nawid_standalone_open(&standalone) != 0)
+        return 1;
+    if (standalone.loop.watch(&standalone.loop, sig_fd, EPOLLIN, signal_ready, NULL) != 0 ||
+        nawid_app_open(&app, &standalone.loop, backend) != 0) {
         nawid_app_close(&app);
+        nawid_standalone_close(&standalone);
         return 1;
     }
 
-    for (;;) {
-        struct epoll_event event;
-        struct nawid_source *source;
-        int n;
-
-        if (nawid_app_prepare(&app) != 0) {
-            fprintf(stderr, "nawid: lost the display connection\n");
-            status = 1;
-            break;
-        }
-        n = epoll_wait(epfd, &event, 1, -1);
-        if (n < 0 && errno != EINTR) {
-            fprintf(stderr, "nawid: epoll_wait: %s\n", strerror(errno));
-            status = 1;
-            break;
-        }
-        source = n > 0 ? event.data.ptr : NULL;
-        if (nawid_app_finish(&app, source && source->kind == NAWID_SRC_DISPLAY) != 0) {
-            fprintf(stderr, "nawid: lost the display connection\n");
-            status = 1;
-            break;
-        }
-        if (!source)
-            continue;
-
-        if (source->kind == NAWID_SRC_SIGNAL) {
-            struct signalfd_siginfo info;
-
-            if (read(sig_fd, &info, sizeof(info)) == sizeof(info))
-                break;
-        } else if (source->kind == NAWID_SRC_CONFIG) {
-            nawid_app_config_event(&app);
-        } else if (source->kind == NAWID_SRC_BUS) {
-            nawid_bus_event(&app.bus, (struct nawid_bus_watch *)source, event.events);
-        }
-    }
+    if (nawid_standalone_run(&standalone, finished, &app) != 0 || app.failed)
+        status = 1;
 
     nawid_app_close(&app);
+    nawid_standalone_close(&standalone);
     return status;
 }
