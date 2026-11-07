@@ -30,3 +30,28 @@ meson install -C build
 
 The install step puts `nawid` and `nawi` in `bin`, the cfgd schema in `share/cfgd/schemas`, the D-Bus service file in `share/dbus-1/services` and the autostart entry in `<sysconfdir>/xdg/autostart`.
 
+## Running
+
+`nawid` selects Wayland when `WAYLAND_DISPLAY` is set and X11 otherwise. Use `nawid -b wayland` or `nawid -b x11` to choose. Only one instance can run per session.
+
+- Wayland: the compositor must support `wlr-output-management`, for example labwc, sway or river. GNOME Shell and KWin do not.
+- X11: RandR 1.2 or newer. The scale of an output is ignored, only the transforms `normal`, `90`, `180` and `270` are supported, and an output that is cloned onto another one is not restored after a layout change. A layout that the server rejects leaves the previous one in place.
+
+A profile is applied when `nawid` starts, when the set of connected outputs changes, when the settings change and when `Apply` is called. A change made by another tool to the same outputs is not reverted.
+
+## Settings
+
+Settings are keys of the cfgd schema `org.nuros.sanar.nawi`, path `/org/nuros/sanar/nawi/`. Changes apply without a restart.
+
+- `auto`: select a profile by the connected outputs. Default `true`.
+- `profile`: name of a profile that is always applied. Empty selects by the connected outputs.
+- `profiles`: list of entries, one per output of a profile.
+
+An entry is `PROFILE/OUTPUT=WIDTHxHEIGHT[@HZ],X,Y,SCALE,TRANSFORM` or `PROFILE/OUTPUT=off`. `OUTPUT` is the name of the compositor or of RandR, for example `DP-1`. `PROFILE` has letters, digits, `.`, `_` and `-`. `TRANSFORM` is `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` or `flipped-270`. Without `@HZ` the preferred mode of that size is used.
+
+```sh
+cfgd set /org/nuros/sanar/nawi/profiles 'desk/eDP-1=off;desk/DP-1=2560x1440@143.912,0,0,1,normal'
+```
+
+With `auto`, a profile is selected when it has an entry for every connected output and every output it enables is connected. The one that enables the most outputs wins, and the first one in the list wins a tie. Entries for outputs that are not connected are ignored.
+
