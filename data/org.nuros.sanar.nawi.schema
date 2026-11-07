@@ -1,0 +1,18 @@
+[schema]
+id = org.nuros.sanar.nawi
+path = /org/nuros/sanar/nawi/
+
+[auto]
+type = b
+default = true
+summary = Apply the profile that matches the connected outputs when they change
+
+[profile]
+type = s
+default =
+summary = Profile that is always applied, empty selects one by the connected outputs
+
+[profiles]
+type = as
+default =
+summary = Output layouts as PROFILE/OUTPUT=WIDTHxHEIGHT[@HZ],X,Y,SCALE,TRANSFORM or PROFILE/OUTPUT=off
