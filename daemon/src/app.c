@@ -249,3 +249,52 @@ int nawid_app_open(struct nawid_app *app, int epfd, enum nawid_backend backend)
     evaluate(app);
     return 0;
 }
+
+void nawid_app_close(struct nawid_app *app)
+{
+    nawid_bus_close(&app->bus);
+    nawid_wl_close(app->wl);
+    nawid_x11_close(app->x11);
+    nawid_profiles_free(&app->profiles);
+    nawid_settings_free(&app->settings);
+    free(app->signature);
+    cfgd_close(app->cfgd);
+    memset(app, 0, sizeof(*app));
+}
+
+int nawid_app_prepare(struct nawid_app *app)
+{
+    return app->wl ? nawid_wl_prepare(app->wl) : 0;
+}
+
+int nawid_app_finish(struct nawid_app *app, bool display_ready)
+{
+    if (app->wl)
+        return nawid_wl_finish(app->wl, display_ready);
+    return display_ready ? nawid_x11_dispatch(app->x11) : 0;
+}
+
+void nawid_app_config_event(struct nawid_app *app)
+{
+    cfgd_dispatch(app->cfgd);
+}
+
+size_t nawid_app_heads(struct nawid_app *app, struct nawid_output **heads)
+{
+    return backend_heads(app, heads);
+}
+
+int nawid_app_apply(struct nawid_app *app, const char *name)
+{
+    const struct nawid_profile *profile = NULL;
+
+    if (name[0] != '\0') {
+        profile = nawid_profiles_find(&app->profiles, name);
+        if (!profile)
+            return -2;
+        snprintf(app->override, sizeof(app->override), "%s", name);
+        return apply_profile(app, profile);
+    }
+    app->override[0] = '\0';
+    return evaluate(app);
+}
