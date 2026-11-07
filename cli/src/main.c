@@ -162,15 +162,16 @@ static int command_apply(const char *name)
     return 0;
 }
 
-static int items_replace(const char *profile, struct nawid_output *outputs, size_t count)
+static int items_replace(const char *profile, struct nawid_output *outputs, size_t count,
+                         int must_exist)
 {
     cfgd_t *cfgd = cfgd_open();
     size_t old_count = 0;
-    char **old;
-    const char **items;
-    char (*lines)[NAWID_NAME_MAX + NAWID_NAME_MAX + 64];
+    char **old = NULL;
+    const char **items = NULL;
+    char (*lines)[NAWID_NAME_MAX + NAWID_NAME_MAX + 64] = NULL;
     size_t total = 0;
-    int status;
+    int status = 1;
 
     if (!cfgd) {
         fprintf(stderr, "nawi: cannot open the settings\n");
@@ -181,7 +182,7 @@ static int items_replace(const char *profile, struct nawid_output *outputs, size
     lines = calloc(count + 1, sizeof(*lines));
     if (!items || !lines) {
         fprintf(stderr, "nawi: out of memory\n");
-        return 1;
+        goto out;
     }
     for (size_t i = 0; i < old_count; i++) {
         size_t length = strlen(profile);
@@ -189,22 +190,29 @@ static int items_replace(const char *profile, struct nawid_output *outputs, size
         if (!(strncmp(old[i], profile, length) == 0 && old[i][length] == '/'))
             items[total++] = old[i];
     }
+    if (must_exist && total == old_count) {
+        fprintf(stderr, "nawi: no such profile\n");
+        goto out;
+    }
     for (size_t i = 0; i < count; i++) {
         if (nawid_item_format(profile, &outputs[i], lines[i], sizeof(lines[i])) != 0) {
-            fprintf(stderr, "nawi: output name \"%s\" is too long\n", outputs[i].name);
-            return 1;
+            fprintf(stderr, "nawi: cannot store the output \"%s\"\n", outputs[i].name);
+            goto out;
         }
         items[total++] = lines[i];
     }
     status = cfgd_set_strv(cfgd, KEY_PROFILES, items, total);
     if (status != CFGD_OK)
         fprintf(stderr, "nawi: cannot save the profile (%d)\n", status);
+    status = status == CFGD_OK ? 0 : 1;
+
+out:
     free(items);
     free(lines);
     if (old)
         cfgd_strv_free(old, old_count);
     cfgd_close(cfgd);
-    return status == CFGD_OK ? 0 : 1;
+    return status;
 }
 
 static int command_save(const char *profile)
@@ -219,14 +227,14 @@ static int command_save(const char *profile)
     }
     if (read_outputs(&outputs, &count) != 0)
         return 1;
-    status = items_replace(profile, outputs, count);
+    status = items_replace(profile, outputs, count, 0);
     free(outputs);
     return status;
 }
 
 static int command_delete(const char *profile)
 {
-    return items_replace(profile, NULL, 0);
+    return items_replace(profile, NULL, 0, 1);
 }
 
 static int usage(void)
