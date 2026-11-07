@@ -256,3 +256,54 @@ static void manager_head(void *data, struct zwlr_output_manager_v1 *manager,
     }
     zwlr_output_head_v1_add_listener(head, &head_listener, h);
 }
+
+static void manager_done(void *data, struct zwlr_output_manager_v1 *manager, uint32_t serial)
+{
+    struct nawid_wl *wl = data;
+
+    (void)manager;
+    wl->serial = serial;
+    wl->ready = true;
+    for (struct wl_head *h = wl->heads; h; h = h->next) {
+        if (h->current) {
+            h->state.width = h->current->info.width;
+            h->state.height = h->current->info.height;
+            h->state.refresh = h->current->info.refresh;
+        }
+    }
+    if (wl->notify)
+        wl->events->changed(wl->user);
+}
+
+static void manager_finished(void *data, struct zwlr_output_manager_v1 *manager)
+{
+    struct nawid_wl *wl = data;
+
+    (void)manager;
+    wl->ready = false;
+}
+
+static const struct zwlr_output_manager_v1_listener manager_listener = {
+    .head = manager_head,
+    .done = manager_done,
+    .finished = manager_finished,
+};
+
+static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
+                            const char *interface, uint32_t version)
+{
+    struct nawid_wl *wl = data;
+
+    if (strcmp(interface, zwlr_output_manager_v1_interface.name) == 0 && !wl->manager) {
+        wl->manager = wl_registry_bind(registry, name, &zwlr_output_manager_v1_interface,
+                                       version < MANAGER_VERSION ? version : MANAGER_VERSION);
+        zwlr_output_manager_v1_add_listener(wl->manager, &manager_listener, wl);
+    }
+}
+
+static void registry_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+    (void)data;
+    (void)registry;
+    (void)name;
+}
