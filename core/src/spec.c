@@ -80,3 +80,94 @@ static bool expect(const char **cursor, char c)
     (*cursor)++;
     return true;
 }
+
+static int parse_spec(const char *spec, struct nawid_output *output)
+{
+    const char *cursor = spec;
+    long width, height, x, y;
+    double refresh = 0.0;
+    double scale;
+    int transform;
+
+    if (strcmp(spec, "off") == 0) {
+        output->enabled = false;
+        return 0;
+    }
+    if (!parse_long(&cursor, &width) || !expect(&cursor, 'x') || !parse_long(&cursor, &height))
+        return -1;
+    if (expect(&cursor, '@') && (!parse_double(&cursor, &refresh) || refresh <= 0.0 ||
+                                 refresh > SIZE_LIMIT))
+        return -1;
+    if (!expect(&cursor, ',') || !parse_long(&cursor, &x) || !expect(&cursor, ',') ||
+        !parse_long(&cursor, &y) || !expect(&cursor, ',') || !parse_double(&cursor, &scale) ||
+        !expect(&cursor, ','))
+        return -1;
+    transform = nawid_transform_parse(cursor);
+    if (transform < 0 || width <= 0 || width > SIZE_LIMIT || height <= 0 ||
+        height > SIZE_LIMIT || x < -SIZE_LIMIT || x > SIZE_LIMIT || y < -SIZE_LIMIT ||
+        y > SIZE_LIMIT || scale <= 0.0 || scale > SCALE_LIMIT)
+        return -1;
+
+    output->enabled = true;
+    output->width = (int)width;
+    output->height = (int)height;
+    output->refresh = (int)lround(refresh * 1000.0);
+    output->x = (int)x;
+    output->y = (int)y;
+    output->scale = scale;
+    output->transform = transform;
+    return 0;
+}
+
+int nawid_item_parse(const char *item, char *profile, size_t profile_size,
+                     struct nawid_output *output)
+{
+    const char *slash = strchr(item, '/');
+    const char *equals;
+    size_t profile_length;
+    size_t name_length;
+    char name[NAWID_NAME_MAX];
+
+    if (!slash)
+        return -1;
+    equals = strchr(slash + 1, '=');
+    if (!equals)
+        return -1;
+    profile_length = (size_t)(slash - item);
+    name_length = (size_t)(equals - slash - 1);
+    if (profile_length == 0 || profile_length >= profile_size || name_length == 0 ||
+        name_length >= sizeof(name) || memchr(slash + 1, '/', name_length))
+        return -1;
+
+    memcpy(profile, item, profile_length);
+    profile[profile_length] = '\0';
+    if (!nawid_profile_name_valid(profile))
+        return -1;
+    memcpy(name, slash + 1, name_length);
+    name[name_length] = '\0';
+
+    memset(output, 0, sizeof(*output));
+    memcpy(output->name, name, name_length + 1);
+    output->scale = 1.0;
+    return parse_spec(equals + 1, output);
+}
+
+int nawid_item_format(const char *profile, const struct nawid_output *output, char *buffer,
+                      size_t size)
+{
+    int written;
+
+    if (!output->enabled) {
+        written = snprintf(buffer, size, "%s/%s=off", profile, output->name);
+    } else if (output->refresh > 0) {
+        written = snprintf(buffer, size, "%s/%s=%dx%d@%d.%03d,%d,%d,%g,%s", profile,
+                           output->name, output->width, output->height, output->refresh / 1000,
+                           output->refresh % 1000, output->x, output->y, output->scale,
+                           nawid_transform_name(output->transform));
+    } else {
+        written = snprintf(buffer, size, "%s/%s=%dx%d,%d,%d,%g,%s", profile, output->name,
+                           output->width, output->height, output->x, output->y, output->scale,
+                           nawid_transform_name(output->transform));
+    }
+    return written < 0 || (size_t)written >= size ? -1 : 0;
+}
