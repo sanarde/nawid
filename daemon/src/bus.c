@@ -197,3 +197,95 @@ static DBusHandlerResult handle_message(DBusConnection *connection, DBusMessage 
     dbus_message_unref(reply);
     return DBUS_HANDLER_RESULT_HANDLED;
 }
+
+static const DBusObjectPathVTable vtable = {
+    .message_function = handle_message,
+};
+
+int nawid_bus_open(struct nawid_bus *bus, int epfd, struct nawid_app *app)
+{
+    DBusError error;
+
+    memset(bus, 0, sizeof(*bus));
+    bus->epfd = epfd;
+    bus->app = app;
+
+    dbus_error_init(&error);
+    bus->connection = dbus_bus_get_private(DBUS_BUS_SESSION, &error);
+    if (!bus->connection) {
+        fprintf(stderr, "nawid: session bus: %s\n", error.message);
+        dbus_error_free(&error);
+        return -1;
+    }
+    dbus_connection_set_exit_on_disconnect(bus->connection, FALSE);
+
+    if (dbus_bus_request_name(bus->connection, BUS_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE,
+                              &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+        fprintf(stderr, "nawid: cannot own %s%s%s\n", BUS_NAME,
+                dbus_error_is_set(&error) ? ": " : "",
+                dbus_error_is_set(&error) ? error.message : "");
+        dbus_error_free(&error);
+        goto fail;
+    }
+    if (!dbus_connection_register_object_path(bus->connection, OBJECT_PATH, &vtable, bus) ||
+        !dbus_connection_set_watch_functions(bus->connection, add_watch, remove_watch,
+                                             toggle_watch, bus, NULL)) {
+        fprintf(stderr, "nawid: cannot register D-Bus object\n");
+        goto fail;
+    }
+    return 0;
+
+fail:
+    dbus_connection_close(bus->connection);
+    dbus_connection_unref(bus->connection);
+    bus->connection = NULL;
+    return -1;
+}
+
+void nawid_bus_close(struct nawid_bus *bus)
+{
+    if (!bus->connection)
+        return;
+    dbus_connection_close(bus->connection);
+    dbus_connection_unref(bus->connection);
+    bus->connection = NULL;
+}
+
+void nawid_bus_event(struct nawid_bus *bus, struct nawid_bus_watch *watch, uint32_t events)
+{
+    unsigned int flags = 0;
+
+    if (!bus->connection || !dbus_watch_get_enabled(watch->watch))
+        return;
+    if (events & EPOLLIN)
+        flags |= DBUS_WATCH_READABLE;
+    if (events & EPOLLOUT)
+        flags |= DBUS_WATCH_WRITABLE;
+    if (events & EPOLLERR)
+        flags |= DBUS_WATCH_ERROR;
+    if (events & EPOLLHUP)
+        flags |= DBUS_WATCH_HANGUP;
+
+    dbus_watch_handle(watch->watch, flags);
+    while (dbus_connection_get_dispatch_status(bus->connection) == DBUS_DISPATCH_DATA_REMAINS)
+        dbus_connection_dispatch(bus->connection);
+
+    if (!dbus_connection_get_is_connected(bus->connection)) {
+        fprintf(stderr, "nawid: disconnected from session bus\n");
+        nawid_bus_close(bus);
+    }
+}
+
+void nawid_bus_emit_changed(struct nawid_bus *bus, const char *profile)
+{
+    DBusMessage *signal;
+
+    if (!bus->connection)
+        return;
+    signal = dbus_message_new_signal(OBJECT_PATH, INTERFACE, "Changed");
+    if (!signal)
+        return;
+    dbus_message_append_args(signal, DBUS_TYPE_STRING, &profile, DBUS_TYPE_INVALID);
+    dbus_connection_send(bus->connection, signal, NULL);
+    dbus_message_unref(signal);
+}
