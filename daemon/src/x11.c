@@ -230,3 +230,166 @@ void nawid_x11_close(struct nawid_x11 *x11)
         xcb_disconnect(x11->connection);
     free(x11);
 }
+
+int nawid_x11_fd(struct nawid_x11 *x11)
+{
+    return xcb_get_file_descriptor(x11->connection);
+}
+
+int nawid_x11_dispatch(struct nawid_x11 *x11)
+{
+    xcb_generic_event_t *event;
+    bool changed = false;
+
+    while ((event = xcb_poll_for_event(x11->connection))) {
+        uint8_t type = event->response_type & 0x7f;
+
+        if (type == x11->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY ||
+            type == x11->first_event + XCB_RANDR_NOTIFY)
+            changed = true;
+        free(event);
+    }
+    if (xcb_connection_has_error(x11->connection))
+        return -1;
+    if (changed)
+        x11->events->changed(x11->user);
+    return 0;
+}
+
+size_t nawid_x11_heads(struct nawid_x11 *x11, struct nawid_output **heads)
+{
+    struct x11_view view;
+    size_t count;
+
+    *heads = NULL;
+    if (view_load(x11, &view) != 0)
+        return 0;
+    count = view.count;
+    *heads = calloc(count ? count : 1, sizeof(**heads));
+    if (!*heads) {
+        view_free(&view);
+        return 0;
+    }
+    for (size_t i = 0; i < count; i++)
+        (*heads)[i] = view.heads[i].state;
+    view_free(&view);
+    return count;
+}
+
+static int mode_for(const struct x11_view *view, const struct x11_head *head,
+                    const struct nawid_output *entry, xcb_randr_mode_t *id)
+{
+    int total = xcb_randr_get_output_info_modes_length(head->info);
+    const xcb_randr_mode_t *ids = xcb_randr_get_output_info_modes(head->info);
+    struct nawid_mode *infos = calloc(total ? (size_t)total : 1, sizeof(*infos));
+    int index;
+
+    if (!infos)
+        return -1;
+    for (int i = 0; i < total; i++) {
+        const xcb_randr_mode_info_t *mode = mode_find(view, ids[i]);
+
+        if (mode) {
+            infos[i].width = mode->width;
+            infos[i].height = mode->height;
+            infos[i].refresh = refresh_of(mode);
+            infos[i].preferred = i < head->info->num_preferred;
+        }
+    }
+    index = nawid_mode_pick(infos, (size_t)total, entry);
+    free(infos);
+    if (index < 0)
+        return -1;
+    *id = ids[index];
+    return 0;
+}
+
+static bool crtc_allowed(const struct x11_head *head, xcb_randr_crtc_t crtc)
+{
+    const xcb_randr_crtc_t *crtcs = xcb_randr_get_output_info_crtcs(head->info);
+    int total = xcb_randr_get_output_info_crtcs_length(head->info);
+
+    for (int i = 0; i < total; i++) {
+        if (crtcs[i] == crtc)
+            return true;
+    }
+    return false;
+}
+
+static bool crtc_taken(const struct x11_view *view, xcb_randr_crtc_t crtc)
+{
+    for (size_t i = 0; i < view->count; i++) {
+        if (view->heads[i].wanted_crtc == crtc)
+            return true;
+    }
+    return false;
+}
+
+static bool rotation_supported(struct nawid_x11 *x11, const struct x11_view *view,
+                               xcb_randr_crtc_t crtc, uint16_t rotation)
+{
+    xcb_randr_get_crtc_info_reply_t *info = xcb_randr_get_crtc_info_reply(
+        x11->connection,
+        xcb_randr_get_crtc_info(x11->connection, crtc, view->resources->config_timestamp),
+        NULL);
+    bool supported = info && (info->rotations & rotation);
+
+    free(info);
+    return supported;
+}
+
+static int plan(struct nawid_x11 *x11, struct x11_view *view,
+                const struct nawid_output *entries, size_t count)
+{
+    const xcb_randr_crtc_t *crtcs =
+        xcb_randr_get_screen_resources_current_crtcs(view->resources);
+    int crtc_total = xcb_randr_get_screen_resources_current_crtcs_length(view->resources);
+
+    for (size_t i = 0; i < view->count; i++) {
+        struct x11_head *head = &view->heads[i];
+        const struct nawid_output *entry = NULL;
+
+        for (size_t j = 0; j < count; j++) {
+            if (strcmp(entries[j].name, head->state.name) == 0)
+                entry = &entries[j];
+        }
+        if (!entry) {
+            head->wanted = head->state;
+            head->wanted_mode = head->current_mode;
+            head->wanted_rotation = head->current_rotation;
+            head->wanted_crtc = head->state.enabled ? head->crtc : XCB_NONE;
+            continue;
+        }
+        head->wanted = *entry;
+        if (!entry->enabled)
+            continue;
+        if (rotation_of(entry->transform) < 0 ||
+            mode_for(view, head, entry, &head->wanted_mode) != 0)
+            return -1;
+        head->wanted_rotation = (uint16_t)rotation_of(entry->transform);
+        if (head->crtc != XCB_NONE && crtc_allowed(head, head->crtc))
+            head->wanted_crtc = head->crtc;
+    }
+    for (size_t i = 0; i < view->count; i++) {
+        struct x11_head *head = &view->heads[i];
+
+        if (!head->wanted.enabled || head->wanted_crtc != XCB_NONE)
+            continue;
+        for (int j = 0; j < crtc_total; j++) {
+            if (crtc_allowed(head, crtcs[j]) && !crtc_taken(view, crtcs[j])) {
+                head->wanted_crtc = crtcs[j];
+                break;
+            }
+        }
+        if (head->wanted_crtc == XCB_NONE)
+            return -1;
+    }
+    for (size_t i = 0; i < view->count; i++) {
+        const struct x11_head *head = &view->heads[i];
+
+        if (head->wanted.enabled &&
+            !rotation_supported(x11, view, head->wanted_crtc, head->wanted_rotation))
+            return -1;
+    }
+    return 0;
+}
