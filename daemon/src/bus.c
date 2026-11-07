@@ -45,36 +45,47 @@ static const char introspection_xml[] =
     "  </interface>\n"
     "</node>\n";
 
-static int watch_update(struct nawid_bus *bus, struct nawid_bus_watch *w, int op)
-{
-    struct epoll_event ev = {.events = 0, .data.ptr = &w->source};
+static void watch_ready(int fd, uint32_t events, void *user);
 
-    if (dbus_watch_get_enabled(w->watch)) {
-        unsigned int flags = dbus_watch_get_flags(w->watch);
+static uint32_t watch_events(DBusWatch *watch)
+{
+    uint32_t events = 0;
+
+    if (dbus_watch_get_enabled(watch)) {
+        unsigned int flags = dbus_watch_get_flags(watch);
 
         if (flags & DBUS_WATCH_READABLE)
-            ev.events |= EPOLLIN;
+            events |= EPOLLIN;
         if (flags & DBUS_WATCH_WRITABLE)
-            ev.events |= EPOLLOUT;
+            events |= EPOLLOUT;
     }
-    return epoll_ctl(bus->epfd, op, w->fd, &ev);
+    return events;
+}
+
+static int watch_arm(struct nawid_bus_watch *w)
+{
+    uint32_t events = watch_events(w->watch);
+
+    w->bus->loop->unwatch(w->bus->loop, w->fd);
+    if (events == 0)
+        return 0;
+    return w->bus->loop->watch(w->bus->loop, w->fd, events, watch_ready, w);
 }
 
 static dbus_bool_t add_watch(DBusWatch *watch, void *data)
 {
-    struct nawid_bus *bus = data;
     struct nawid_bus_watch *w = calloc(1, sizeof(*w));
 
     if (!w)
         return FALSE;
-    w->source.kind = NAWID_SRC_BUS;
+    w->bus = data;
     w->watch = watch;
     w->fd = fcntl(dbus_watch_get_unix_fd(watch), F_DUPFD_CLOEXEC, 0);
     if (w->fd < 0) {
         free(w);
         return FALSE;
     }
-    if (watch_update(bus, w, EPOLL_CTL_ADD) != 0) {
+    if (watch_arm(w) != 0) {
         close(w->fd);
         free(w);
         return FALSE;
@@ -88,7 +99,7 @@ static void remove_watch(DBusWatch *watch, void *data)
     struct nawid_bus *bus = data;
     struct nawid_bus_watch *w = dbus_watch_get_data(watch);
 
-    epoll_ctl(bus->epfd, EPOLL_CTL_DEL, w->fd, NULL);
+    bus->loop->unwatch(bus->loop, w->fd);
     close(w->fd);
     dbus_watch_set_data(watch, NULL, NULL);
     free(w);
@@ -96,7 +107,8 @@ static void remove_watch(DBusWatch *watch, void *data)
 
 static void toggle_watch(DBusWatch *watch, void *data)
 {
-    watch_update(data, dbus_watch_get_data(watch), EPOLL_CTL_MOD);
+    (void)data;
+    watch_arm(dbus_watch_get_data(watch));
 }
 
 static void append_outputs(DBusMessage *message, struct nawid_app *app)
@@ -202,12 +214,12 @@ static const DBusObjectPathVTable vtable = {
     .message_function = handle_message,
 };
 
-int nawid_bus_open(struct nawid_bus *bus, int epfd, struct nawid_app *app)
+int nawid_bus_open(struct nawid_bus *bus, struct nawid_loop *loop, struct nawid_app *app)
 {
     DBusError error;
 
     memset(bus, 0, sizeof(*bus));
-    bus->epfd = epfd;
+    bus->loop = loop;
     bus->app = app;
 
     dbus_error_init(&error);
@@ -251,10 +263,13 @@ void nawid_bus_close(struct nawid_bus *bus)
     bus->connection = NULL;
 }
 
-void nawid_bus_event(struct nawid_bus *bus, struct nawid_bus_watch *watch, uint32_t events)
+static void watch_ready(int fd, uint32_t events, void *user)
 {
+    struct nawid_bus_watch *watch = user;
+    struct nawid_bus *bus = watch->bus;
     unsigned int flags = 0;
 
+    (void)fd;
     if (!bus->connection || !dbus_watch_get_enabled(watch->watch))
         return;
     if (events & EPOLLIN)
