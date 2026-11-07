@@ -159,3 +159,93 @@ static void sync_outputs(struct nawid_app *app)
         free(signature);
     }
 }
+
+static void settings_reload(struct nawid_app *app)
+{
+    size_t skipped;
+
+    app->override[0] = '\0';
+    nawid_settings_load(app->cfgd, &app->settings);
+    nawid_profiles_free(&app->profiles);
+    skipped = nawid_profiles_load(&app->profiles, app->settings.items,
+                                  app->settings.items_count);
+    if (skipped > 0)
+        fprintf(stderr, "nawid: %zu invalid or duplicate profile entries ignored\n", skipped);
+}
+
+static void settings_changed(const char *key, void *user)
+{
+    (void)key;
+    settings_reload(user);
+    evaluate(user);
+}
+
+static void backend_changed(void *user)
+{
+    sync_outputs(user);
+}
+
+static void backend_applied(bool ok, void *user)
+{
+    if (ok)
+        sync_outputs(user);
+    else
+        fprintf(stderr, "nawid: the compositor did not accept the layout\n");
+}
+
+static int add_source(int epfd, int fd, struct nawid_source *source)
+{
+    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = source};
+
+    return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+int nawid_app_open(struct nawid_app *app, int epfd, enum nawid_backend backend)
+{
+    int display_fd;
+
+    memset(app, 0, sizeof(*app));
+    app->epfd = epfd;
+    app->config_source.kind = NAWID_SRC_CONFIG;
+    app->display_source.kind = NAWID_SRC_DISPLAY;
+    app->events.changed = backend_changed;
+    app->events.applied = backend_applied;
+    app->bus.connection = NULL;
+
+    app->cfgd = cfgd_open();
+    if (!app->cfgd) {
+        fprintf(stderr, "nawid: cannot open the settings\n");
+        return -1;
+    }
+    settings_reload(app);
+    if (add_source(epfd, cfgd_notify_fd(app->cfgd), &app->config_source) != 0 ||
+        cfgd_subscribe(app->cfgd, NAWID_SETTINGS_PREFIX, settings_changed, app) < 0) {
+        fprintf(stderr, "nawid: cannot watch the settings\n");
+        return -1;
+    }
+
+    if (backend == NAWID_BACKEND_AUTO)
+        backend = getenv("WAYLAND_DISPLAY") ? NAWID_BACKEND_WAYLAND : NAWID_BACKEND_X11;
+    app->backend = backend;
+    if (backend == NAWID_BACKEND_WAYLAND) {
+        app->wl = nawid_wl_open(&app->events, app);
+        if (!app->wl)
+            return -1;
+        display_fd = nawid_wl_fd(app->wl);
+    } else {
+        app->x11 = nawid_x11_open(&app->events, app);
+        if (!app->x11)
+            return -1;
+        display_fd = nawid_x11_fd(app->x11);
+    }
+    if (add_source(epfd, display_fd, &app->display_source) != 0) {
+        fprintf(stderr, "nawid: cannot watch the display connection\n");
+        return -1;
+    }
+    if (nawid_bus_open(&app->bus, epfd, app) != 0)
+        return -1;
+
+    app->signature = signature_make(app);
+    evaluate(app);
+    return 0;
+}
