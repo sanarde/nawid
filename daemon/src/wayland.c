@@ -39,7 +39,6 @@ struct nawid_wl {
     uint32_t serial;
     bool ready;
     bool notify;
-    bool reading;
     const struct nawid_events *events;
     void *user;
 };
@@ -385,35 +384,17 @@ int nawid_wl_fd(struct nawid_wl *wl)
     return wl_display_get_fd(wl->display);
 }
 
-int nawid_wl_prepare(struct nawid_wl *wl)
+int nawid_wl_dispatch(struct nawid_wl *wl)
 {
-    while (wl_display_prepare_read(wl->display) != 0)
-        wl_display_dispatch_pending(wl->display);
-    wl->reading = true;
-    if (wl_display_flush(wl->display) < 0 && errno != EAGAIN) {
-        wl_display_cancel_read(wl->display);
-        wl->reading = false;
+    while (wl_display_prepare_read(wl->display) != 0) {
+        if (wl_display_dispatch_pending(wl->display) < 0)
+            return -1;
+    }
+    if (wl_display_read_events(wl->display) < 0 || wl_display_dispatch_pending(wl->display) < 0)
         return -1;
-    }
+    if (wl_display_flush(wl->display) < 0 && errno != EAGAIN)
+        return -1;
     return 0;
-}
-
-int nawid_wl_finish(struct nawid_wl *wl, int readable)
-{
-    int rc = 0;
-
-    if (wl->reading) {
-        if (readable) {
-            if (wl_display_read_events(wl->display) < 0)
-                rc = -1;
-        } else {
-            wl_display_cancel_read(wl->display);
-        }
-        wl->reading = false;
-    }
-    if (rc == 0 && wl_display_dispatch_pending(wl->display) < 0)
-        rc = -1;
-    return rc;
 }
 
 size_t nawid_wl_heads(struct nawid_wl *wl, struct nawid_output **heads)
