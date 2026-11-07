@@ -161,3 +161,92 @@ static int command_apply(const char *name)
     dbus_message_unref(reply);
     return 0;
 }
+
+static int items_replace(const char *profile, struct nawid_output *outputs, size_t count)
+{
+    cfgd_t *cfgd = cfgd_open();
+    size_t old_count = 0;
+    char **old;
+    const char **items;
+    char (*lines)[NAWID_NAME_MAX + NAWID_NAME_MAX + 64];
+    size_t total = 0;
+    int status;
+
+    if (!cfgd) {
+        fprintf(stderr, "nawi: cannot open the settings\n");
+        return 1;
+    }
+    old = cfgd_get_strv(cfgd, KEY_PROFILES, &old_count);
+    items = calloc(old_count + count + 1, sizeof(*items));
+    lines = calloc(count + 1, sizeof(*lines));
+    if (!items || !lines) {
+        fprintf(stderr, "nawi: out of memory\n");
+        return 1;
+    }
+    for (size_t i = 0; i < old_count; i++) {
+        size_t length = strlen(profile);
+
+        if (!(strncmp(old[i], profile, length) == 0 && old[i][length] == '/'))
+            items[total++] = old[i];
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (nawid_item_format(profile, &outputs[i], lines[i], sizeof(lines[i])) != 0) {
+            fprintf(stderr, "nawi: output name \"%s\" is too long\n", outputs[i].name);
+            return 1;
+        }
+        items[total++] = lines[i];
+    }
+    status = cfgd_set_strv(cfgd, KEY_PROFILES, items, total);
+    if (status != CFGD_OK)
+        fprintf(stderr, "nawi: cannot save the profile (%d)\n", status);
+    free(items);
+    free(lines);
+    if (old)
+        cfgd_strv_free(old, old_count);
+    cfgd_close(cfgd);
+    return status == CFGD_OK ? 0 : 1;
+}
+
+static int command_save(const char *profile)
+{
+    struct nawid_output *outputs;
+    size_t count;
+    int status;
+
+    if (!nawid_profile_name_valid(profile)) {
+        fprintf(stderr, "nawi: invalid profile name\n");
+        return 2;
+    }
+    if (read_outputs(&outputs, &count) != 0)
+        return 1;
+    status = items_replace(profile, outputs, count);
+    free(outputs);
+    return status;
+}
+
+static int command_delete(const char *profile)
+{
+    return items_replace(profile, NULL, 0);
+}
+
+static int usage(void)
+{
+    fprintf(stderr, "usage: nawi list | profiles | apply [PROFILE] | save PROFILE | "
+                    "delete PROFILE\n");
+    return 2;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "list") == 0)
+        return command_list();
+    if (argc == 2 && strcmp(argv[1], "profiles") == 0)
+        return command_profiles();
+    if (argc >= 2 && argc <= 3 && strcmp(argv[1], "apply") == 0)
+        return command_apply(argc == 3 ? argv[2] : "");
+    if (argc == 3 && strcmp(argv[1], "save") == 0)
+        return command_save(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "delete") == 0)
+        return command_delete(argv[2]);
+    return usage();
+}
