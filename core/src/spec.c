@@ -171,3 +171,46 @@ int nawid_item_format(const char *profile, const struct nawid_output *output, ch
     }
     return written < 0 || (size_t)written >= size ? -1 : 0;
 }
+
+bool nawid_output_equal(const struct nawid_output *a, const struct nawid_output *b,
+                        bool with_scale)
+{
+    if (a->enabled != b->enabled)
+        return false;
+    if (!a->enabled)
+        return true;
+    if (a->x != b->x || a->y != b->y || a->width != b->width || a->height != b->height ||
+        a->transform != b->transform)
+        return false;
+    if (a->refresh > 0 && b->refresh > 0 && abs(a->refresh - b->refresh) > REFRESH_TOLERANCE)
+        return false;
+    return !with_scale || fabs(a->scale - b->scale) <= SCALE_TOLERANCE;
+}
+
+int nawid_mode_pick(const struct nawid_mode *modes, size_t count,
+                    const struct nawid_output *wanted)
+{
+    int best = -1;
+    int best_distance = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int distance;
+
+        if (modes[i].width != wanted->width || modes[i].height != wanted->height)
+            continue;
+        if (wanted->refresh > 0) {
+            distance = abs(modes[i].refresh - wanted->refresh);
+            if (distance > MODE_TOLERANCE)
+                continue;
+        } else if (modes[i].preferred) {
+            return (int)i;
+        } else {
+            distance = -modes[i].refresh;
+        }
+        if (best < 0 || distance < best_distance) {
+            best = (int)i;
+            best_distance = distance;
+        }
+    }
+    return best;
+}
