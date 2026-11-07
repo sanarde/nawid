@@ -55,3 +55,25 @@ cfgd set /org/nuros/sanar/nawi/profiles 'desk/eDP-1=off;desk/DP-1=2560x1440@143.
 
 With `auto`, a profile is selected when it has an entry for every connected output and every output it enables is connected. The one that enables the most outputs wins, and the first one in the list wins a tie. Entries for outputs that are not connected are ignored.
 
+## Command line
+
+```
+nawi list
+nawi profiles
+nawi apply [PROFILE]
+nawi save PROFILE
+nawi delete PROFILE
+```
+
+`list` prints the current layout. `profiles` lists the profiles and marks the applied one with `*`. `apply PROFILE` applies a profile until the settings change, `apply` without a name returns to the selection by `auto` and `profile`. `save` stores the current layout as a profile, replacing a profile of the same name, and `delete` removes one. `save` and `delete` write `profiles` through cfgd.
+
+## D-Bus interface
+
+Session bus, name `org.nuros.sanar.Nawi`, object `/org/nuros/sanar/nawi`, interface `org.nuros.sanar.Nawi`.
+
+- `GetOutputs() -> a(sbiiiiids)`: name, enabled, x, y, width, height, refresh in mHz, scale, transform.
+- `GetProfiles() -> as`
+- `GetProfile() -> s`: applied profile, empty when none.
+- `Apply(s profile)`: empty selects by `auto` and `profile`. Errors `org.nuros.sanar.Nawi.Error.NoProfile` and `org.nuros.sanar.Nawi.Error.Rejected`.
+- Signal `Changed(s profile)`.
+
