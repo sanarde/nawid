@@ -77,3 +77,10 @@ Session bus, name `org.nuros.sanar.Nawi`, object `/org/nuros/sanar/nawi`, interf
 - `Apply(s profile)`: empty selects by `auto` and `profile`. Errors `org.nuros.sanar.Nawi.Error.NoProfile` and `org.nuros.sanar.Nawi.Error.Rejected`.
 - Signal `Changed(s profile)`.
 
+## Links
+
+- [CONTRIBUTING](CONTRIBUTING.md)
+
+## License
+
+GPL-3.0-only. See [LICENSE](LICENSE). The file `protocols/wlr-output-management-unstable-v1.xml` is taken from [wlr-protocols](https://gitlab.freedesktop.org/wlroots/wlr-protocols) and keeps its own license text.
